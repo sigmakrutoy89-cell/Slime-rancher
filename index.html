@@ -1,0 +1,296 @@
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-L7856P3VNT"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-L7856P3VNT');
+</script>
+
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+    <base href="https://cdn.jsdelivr.net/gh/web-ports/slime-ranchers@f0c5856ac43cf0cfbab4c58139282fc75f9b1861/">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Slime Rancher Optimized v0.2.1</title>
+    <link rel="shortcut icon" href="TemplateData/favicon.ico">
+    <link rel="stylesheet" href="TemplateData/style.css">
+    <script src="TemplateData/UnityProgress.js"></script>
+    <script src="Build/UnityLoader.js"></script>
+    <script src="mobile-controls.js" defer></script>
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        .webgl-content {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+        .bg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+        }
+        .bg img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        #gameContainer {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        #gameContainer canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #loading-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            -webkit-text-stroke-width: 2px;
+            -webkit-text-stroke-color: black;
+            color: white;
+            font-size: 48px;
+            font-family: cursive;
+            text-align: center;
+            z-index: 100;
+            white-space: nowrap;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="webgl-content">
+        <div class="bg">
+            <img class="bg" src="TemplateData/loading_bg.png" alt="Loading background" loading="lazy">
+        </div>
+        <div id="loading-text">LOADING... 0.00 MB / 54.5 MB</div>
+        <div id="gameContainer"></div>
+    </div>
+
+<script>
+    // ======== ОПТИМИЗАЦИИ ========
+    
+    // 1. Кэширование XMLHttpRequest
+    const ogxhr = window.XMLHttpRequest;
+    const xhrCache = new Map();
+
+    function xhrfunc() {
+        const xhr = new ogxhr();
+        const open = xhr.open;
+        xhr.open = function(method, url, ...rest) {
+            if (url.includes("blob:")) {
+                return open.call(this, method, "blob:"+url.split("blob:")[1], ...rest);
+            }
+            return open.call(this, method, url, ...rest);
+        };
+        return xhr;
+    }
+    window.XMLHttpRequest = xhrfunc;
+
+    // 2. Переменные для оптимизации
+    const loadingText = document.querySelector("#loading-text");
+    let loadedBytes = 0;
+    let resizeTimeout;
+    let lastResize = 0;
+
+    // 3. Оптимизированная загрузка с кэшем и параллелизмом
+    async function fetchWithProgress(url) {
+        // Проверка кэша (для повторных загрузок)
+        if (xhrCache.has(url)) {
+            return xhrCache.get(url);
+        }
+
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                cache: 'force-cache', // Кэширование на уровне браузера
+                priority: 'high'
+            });
+
+            if (!response.ok) throw new Error(`Failed to fetch ${url}`);
+
+            const reader = response.body.getReader();
+            const chunks = [];
+            let received = 0;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                received += value.length;
+                loadedBytes += value.length;
+                chunks.push(value);
+
+                // Оптимизировано: обновление текста реже (каждые 100KB)
+                if (loadedBytes % 102400 < value.length) {
+                    updateLoadingText();
+                }
+            }
+
+            const fullBuffer = new Uint8Array(received);
+            let offset = 0;
+            for (let chunk of chunks) {
+                fullBuffer.set(chunk, offset);
+                offset += chunk.length;
+            }
+
+            const buffer = fullBuffer.buffer;
+            xhrCache.set(url, buffer);
+            return buffer;
+        } catch (error) {
+            console.error('Fetch error:', error);
+            throw error;
+        }
+    }
+
+    function updateLoadingText() {
+        const mbDone = (loadedBytes / (1024 * 1024)).toFixed(2);
+        loadingText.textContent = `LOADING... ${mbDone} MB / 54.5 MB`;
+    }
+
+    async function mergeFiles(fileParts) {
+        // Параллельная загрузка файлов
+        const buffers = await Promise.all(
+            fileParts.map(part => fetchWithProgress(part))
+        );
+        const mergedBlob = new Blob(buffers, { type: 'application/octet-stream' });
+        return URL.createObjectURL(mergedBlob);
+    }
+
+    function getParts(file, start, end) {
+        const parts = [];
+        for (let i = start; i <= end; i++) {
+            parts.push(file + ".part" + i);
+        }
+        return parts;
+    }
+
+    // 4. Оптимизированный resize с throttling
+    function resizeUnityContainer() {
+        const now = Date.now();
+        if (now - lastResize < 100) return; // Throttle: не чаще чем каждые 100ms
+        lastResize = now;
+
+        const container = document.getElementById("gameContainer");
+        const canvas = container.querySelector("canvas");
+
+        if (!container) return;
+
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        container.style.width = width + "px";
+        container.style.height = height + "px";
+
+        if (canvas) {
+            canvas.style.width = width + "px";
+            canvas.style.height = height + "px";
+        }
+    }
+
+    // 5. Инициализация игры с оптимизациями
+    (async () => {
+        try {
+            // Загрузка файлов параллельно
+            const [dataUrl] = await Promise.all([
+                mergeFiles(getParts("Build/slimeBUILDS.data.unityweb", 1, 3)),
+            ]);
+
+            const json = {
+                "companyName": "Snubs",
+                "productName": "Slime Rancher Prototype",
+                "dataUrl": dataUrl,
+                "wasmCodeUrl": "slimeBUILDS.wasm.code.unityweb",
+                "wasmFrameworkUrl": "slimeBUILDS.framework.unityweb",
+                // Оптимизация памяти: для средних систем можно снизить до 256MB
+                "TOTAL_MEMORY": 536870912, // 512MB - стабильно
+                "graphicsAPI": ["WebGL 2.0", "WebGL 1.0"],
+                "webglContextAttributes": {
+                    "preserveDrawingBuffer": false,
+                    "antialias": false, // Отключаем антиалиасинг для скорости
+                    "stencil": false,
+                    "depth": true,
+                    "alpha": false,
+                    "premultipliedAlpha": true,
+                    "powerPreference": "high-performance"
+                },
+                "splashScreenStyle": "Dark"
+            };
+
+            const blob = new Blob([JSON.stringify(json)], {
+                type: "application/json"
+            });
+            const blobUrl = URL.createObjectURL(blob);
+
+            // Resize слушатель с оптимизацией
+            window.addEventListener("resize", resizeUnityContainer, { passive: true });
+            
+            // Отключаем scroll и другие события для производительности
+            document.body.style.overflow = "hidden";
+            document.documentElement.style.overflow = "hidden";
+
+            UnityLoader.instantiate("gameContainer", json, {
+                url: blobUrl,
+                Module: {
+                    onRuntimeInitialized: function() {
+                        resizeUnityContainer();
+                        const loadText = document.querySelector("#loading-text");
+                        if (loadText) loadText.remove();
+                        
+                        // Очистка памяти от кэша после загрузки
+                        setTimeout(() => {
+                            xhrCache.clear();
+                            // Явный сборщик мусора (если поддерживается)
+                            if (window.gc) {
+                                try { window.gc(); } catch(e) {}
+                            }
+                        }, 2000);
+                    },
+                    onBeforeUnload: function() {
+                        window.removeEventListener("resize", resizeUnityContainer);
+                    }
+                }
+            });
+
+        } catch (error) {
+            console.error('Game initialization error:', error);
+            loadingText.textContent = 'Error loading game. Please refresh.';
+        }
+    })();
+
+    // 6. Отключение ненужного jQuery если он используется
+    if (window.jQuery) {
+        jQuery.ajax = jQuery.ajax || function() {};
+    }
+
+    // 7. Оптимизация памяти
+    setInterval(() => {
+        // Периодическая попытка очистки памяти (мягко)
+        if (window.gc) {
+            try { window.gc(); } catch(e) {}
+        }
+    }, 30000); // Каждые 30 секунд
+
+</script>
+
+</body>
+</html>
