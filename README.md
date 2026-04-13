@@ -4,7 +4,7 @@ This repository contains an archived demo version of Slime Rancher. The files we
 
 How to Run:
 
-Browser Version: Click here to play
+Browser Version: https://sigmakrutoy89-cell.github.io/Slime-rancher/
 
 Local Version: Click the Code button -> Download ZIP, extract the archive, and run the main file.
 
